@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: Busca
+
+# server comfigurações
+server:
+  port: 8001
+
+
+
+# https://revistas.inpi.gov.br/rpi/
+
+#                                    Variavel \|/  RM2875
+# marca |: https://revistas.inpi.gov.br/txt/RM2875.zip | RM
+# partetes : P
+# seções : PC
+# SEÇÃO II CONTRATOS DE TECNOLOGIA: CT

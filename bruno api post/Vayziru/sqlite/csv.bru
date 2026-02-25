@@ -1,0 +1,19 @@
+meta {
+  name: csv
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:8002/sql/csv?data=2023-10-27
+  body: none
+  auth: inherit
+}
+
+params:query {
+  data: 2023-10-27
+}
+
+settings {
+  encodeUrl: true
+}

@@ -1,0 +1,18 @@
+server:
+  port: 8000
+
+spring:
+  application:
+    name: gateway
+  cloud:
+    gateway:
+      routes:
+        - id: busca
+          uri: http://localhost:8001
+          predicates:
+            - Path=/api/busca/**
+        - id: site_local
+          uri: forward:/index.html
+          predicates:
+            - Path=/
+            

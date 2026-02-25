@@ -1,0 +1,20 @@
+meta {
+  name: test busca getawy
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://localhost:8000/api/busca/marca/nome?nome=assa
+  body: none
+  auth: inherit
+}
+
+params:query {
+  nome: assa
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

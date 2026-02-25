@@ -1,0 +1,20 @@
+meta {
+  name: Test busca nome
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:8001/api/busca/marca/nome?nome=dell
+  body: none
+  auth: inherit
+}
+
+params:query {
+  nome: dell
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
