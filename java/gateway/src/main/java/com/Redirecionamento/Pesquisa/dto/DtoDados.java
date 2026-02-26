@@ -7,6 +7,7 @@ public record DtoDados(
     String duracao,
     String cpuUso,
     String cpuDelta,
+    String temperatura,
     String ram,
     String ramDelta,
     LocalDateTime data

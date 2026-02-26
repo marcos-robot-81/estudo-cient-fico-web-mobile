@@ -4,8 +4,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -30,9 +28,6 @@ public class ServiceJDBCH2 {
     
     @Inject
     DataSource dataSource;
-
-    // Cache para evitar tentar criar a tabela em toda requisição
-    private final Set<String> tabelasVerificadas = ConcurrentHashMap.newKeySet();
 
     // Fila para processamento assíncrono (Buffer)
     private final BlockingQueue<DtoDados> buffer = new LinkedBlockingQueue<>(50000);
@@ -66,6 +61,7 @@ public class ServiceJDBCH2 {
     }
 
     private void processarFila() {
+        System.out.println("🚀 Thread de processamento de fila iniciada.");
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 // Pega um item ou aguarda. Se tiver muitos, pega em lote.
@@ -103,34 +99,31 @@ public class ServiceJDBCH2 {
     }
 
     private void garantirTabela(Connection conn, String nomeTabela) throws SQLException {
-        if (tabelasVerificadas.contains(nomeTabela)) {
-            return;
-        }
         try (Statement stmt = conn.createStatement()) {
-            String sql = "CREATE TABLE IF NOT EXISTS " + nomeTabela + " (" +
-                         "URL TEXT, " +
-                         "duracao TEXT, " +
-                         "cpu_uso TEXT, " +
-                         "cpu_delta TEXT, " +
-                         "ram TEXT, " +
-                         "ram_delta TEXT, " +
-                         "data TEXT)";
-            stmt.execute(sql);
-            tabelasVerificadas.add(nomeTabela);
+            // Cria a tabela com uma coluna primária se ela não existir.
+            // Isso garante que a tabela exista para os comandos ALTER.
+            stmt.execute("CREATE TABLE IF NOT EXISTS " + nomeTabela + " (id INT AUTO_INCREMENT PRIMARY KEY)");
+
+            // Adiciona cada coluna individualmente se ela não existir.
+            // Isso torna o schema retrocompatível, atualizando tabelas antigas.
+            stmt.execute("ALTER TABLE " + nomeTabela + " ADD COLUMN IF NOT EXISTS URL TEXT");
+            stmt.execute("ALTER TABLE " + nomeTabela + " ADD COLUMN IF NOT EXISTS duracao TEXT");
+            stmt.execute("ALTER TABLE " + nomeTabela + " ADD COLUMN IF NOT EXISTS cpu_uso TEXT");
+            stmt.execute("ALTER TABLE " + nomeTabela + " ADD COLUMN IF NOT EXISTS cpu_delta TEXT");
+            stmt.execute("ALTER TABLE " + nomeTabela + " ADD COLUMN IF NOT EXISTS temperatura TEXT");
+            stmt.execute("ALTER TABLE " + nomeTabela + " ADD COLUMN IF NOT EXISTS ram TEXT");
+            stmt.execute("ALTER TABLE " + nomeTabela + " ADD COLUMN IF NOT EXISTS ram_delta TEXT");
+            stmt.execute("ALTER TABLE " + nomeTabela + " ADD COLUMN IF NOT EXISTS data TEXT");
         }
     }
 
     private void garantirTabelaMetricas(Connection conn, String nomeTabela) throws SQLException {
-        if (tabelasVerificadas.contains(nomeTabela)) {
-            return;
-        }
         try (Statement stmt = conn.createStatement()) {
             String sql = "CREATE TABLE IF NOT EXISTS " + nomeTabela + " (" +
                          "id INTEGER PRIMARY KEY AUTO_INCREMENT, " +
                          "data_operacao TEXT, " +
                          "tempo_ns BIGINT)";
             stmt.execute(sql);
-            tabelasVerificadas.add(nomeTabela);
         }
     }
 
@@ -174,7 +167,7 @@ public class ServiceJDBCH2 {
 
     private List<DtoDados> lerDadosTabela(String nomeTabela) {
         List<DtoDados> dados = new ArrayList<>();
-        String sql = "SELECT URL, duracao, cpu_uso, cpu_delta, ram, ram_delta, data FROM " + nomeTabela;
+        String sql = "SELECT URL, duracao, cpu_uso, cpu_delta, temperatura, ram, ram_delta, data FROM " + nomeTabela;
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql);
@@ -186,9 +179,10 @@ public class ServiceJDBCH2 {
                         rs.getString("duracao"),
                         rs.getString("cpu_uso"),
                         rs.getString("cpu_delta"),
+                        rs.getString("temperatura"),
                         rs.getString("ram"),
                         rs.getString("ram_delta"),
-                        LocalDateTime.parse(rs.getString("data"))
+                        rs.getString("data")
                 );
                 dados.add(dado);
             }
@@ -207,8 +201,15 @@ public class ServiceJDBCH2 {
         // Agrupa os dados por tabela (data)
         Map<String, List<DtoDados>> porTabela = new HashMap<>();
         for (DtoDados d : lote) {
-            LocalDateTime dataRef = d.data() != null ? d.data() : LocalDateTime.now();
-            String nomeTabela = gerarNomeTabela(dataRef.toLocalDate().toString());
+            String dataString = d.data();
+            String datePart;
+            // Extrai a parte da data (yyyy-MM-dd) da string para nomear a tabela
+            if (dataString != null && dataString.length() >= 10) {
+                datePart = dataString.substring(0, 10);
+            } else {
+                datePart = java.time.LocalDate.now().toString();
+            }
+            String nomeTabela = gerarNomeTabela(datePart);
             porTabela.computeIfAbsent(nomeTabela, k -> new ArrayList<>()).add(d);
         }
 
@@ -220,18 +221,20 @@ public class ServiceJDBCH2 {
             long inicio = System.nanoTime();
             try (Connection conn = dataSource.getConnection()) {
                 garantirTabela(conn, nomeTabela);
-                String sql = "INSERT INTO " + nomeTabela + " (URL, duracao, cpu_uso, cpu_delta, ram, ram_delta, data) VALUES (?, ?, ?, ?, ?, ?, ?)";
+                String sql = "INSERT INTO " + nomeTabela + " (URL, duracao, cpu_uso, cpu_delta, temperatura, ram, ram_delta, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
                 
                 try (PreparedStatement stmt = conn.prepareStatement(sql)) {
                     for (DtoDados dado : dadosTabela) {
-                        LocalDateTime dataRef = dado.data() != null ? dado.data() : LocalDateTime.now();
                         stmt.setString(1, dado.url());
                         stmt.setString(2, dado.duracao());
                         stmt.setString(3, dado.cpuUso());
                         stmt.setString(4, dado.cpuDelta());
-                        stmt.setString(5, dado.ram());
-                        stmt.setString(6, dado.ramDelta());
-                        stmt.setString(7, dataRef.toString());
+                        stmt.setString(5, dado.temperatura());
+                        stmt.setString(6, dado.ram());
+                        stmt.setString(7, dado.ramDelta());
+                        // Salva a string de data original, ou a data/hora atual se for nula/vazia
+                        String dataParaSalvar = (dado.data() != null && !dado.data().isEmpty()) ? dado.data() : LocalDateTime.now().toString();
+                        stmt.setString(8, dataParaSalvar);
                         stmt.addBatch();
                     }
                     stmt.executeBatch();
@@ -240,8 +243,14 @@ public class ServiceJDBCH2 {
                 // Registra métrica do lote
                 long fim = System.nanoTime();
                 // Usa a data do primeiro item para definir onde salvar a métrica
-                String dataString = dadosTabela.get(0).data() != null ? dadosTabela.get(0).data().toLocalDate().toString() : LocalDateTime.now().toLocalDate().toString();
-                registrarMetrica(fim - inicio, dataString);
+                String dataStringForMetrica;
+                String firstData = dadosTabela.get(0).data();
+                if (firstData != null && firstData.length() >= 10) {
+                    dataStringForMetrica = firstData.substring(0, 10);
+                } else {
+                    dataStringForMetrica = java.time.LocalDate.now().toString();
+                }
+                registrarMetrica(fim - inicio, dataStringForMetrica);
                 
                 System.out.println("✅ Lote de " + dadosTabela.size() + " itens salvo na tabela: " + nomeTabela);
 
@@ -258,6 +267,10 @@ public class ServiceJDBCH2 {
             return false;
         }
 
+        // Log para monitorar o tamanho da fila
+        if (buffer.size() > 1000) {
+            System.out.println("⚠️ Alerta: Fila de gravação com " + buffer.size() + " itens pendentes.");
+        }
         // Adiciona na fila e retorna imediatamente (Non-blocking)
         return buffer.offer(dado);
     }
@@ -298,13 +311,14 @@ public class ServiceJDBCH2 {
     public String gerarCsv(String data) {
         List<DtoDados> dados = getListDados(data);
         StringBuilder csv = new StringBuilder();
-        csv.append("URL,Duracao,CPU Uso,CPU Delta,RAM,RAM Delta,Data\n");
+        csv.append("URL,Duracao,CPU Uso,CPU Delta,Temperatura,RAM,RAM Delta,Data\n");
         
         for (DtoDados dado : dados) {
             csv.append(dado.url() != null ? dado.url() : "").append(",");
             csv.append(dado.duracao() != null ? dado.duracao() : "").append(",");
             csv.append(dado.cpuUso() != null ? dado.cpuUso() : "").append(",");
             csv.append(dado.cpuDelta() != null ? dado.cpuDelta() : "").append(",");
+            csv.append(dado.temperatura() != null ? dado.temperatura() : "").append(",");
             csv.append(dado.ram() != null ? dado.ram() : "").append(",");
             csv.append(dado.ramDelta() != null ? dado.ramDelta() : "").append(",");
             csv.append(dado.data()).append("\n");

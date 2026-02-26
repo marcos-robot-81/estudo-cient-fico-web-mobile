@@ -8,6 +8,9 @@ import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.beans.factory.DisposableBean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.Redirecionamento.Pesquisa.tapyofdeta.Dados;
 
@@ -16,20 +19,26 @@ import reactor.core.publisher.Mono;
 import java.lang.management.ManagementFactory;
 import com.sun.management.OperatingSystemMXBean;
 import java.time.Duration;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Locale;
+import java.time.LocalDateTime;
 
 
 @Component
-public class PerformanceMonitorFilter implements WebFilter {
+public class PerformanceMonitorFilter implements WebFilter, DisposableBean {
 
+    private static final Logger logger = LoggerFactory.getLogger(PerformanceMonitorFilter.class);
     private final WebClient webClient;
     private final OperatingSystemMXBean osBean;
+    private final ConnectionProvider provider;
 
     public PerformanceMonitorFilter() {
         java.lang.management.OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
         this.osBean = (bean instanceof OperatingSystemMXBean) ? (OperatingSystemMXBean) bean : null;
 
         // Configura um pool de conexões robusto para alta concorrência
-        ConnectionProvider provider = ConnectionProvider.builder("metrics-pool")
+        this.provider = ConnectionProvider.builder("metrics-pool")
                 .maxConnections(1000)               // Permite mais conexões simultâneas
                 .pendingAcquireMaxCount(200000)     // Aumenta drasticamente a fila de espera (buffer)
                 .pendingAcquireTimeout(Duration.ofSeconds(180)) // Aumenta o tempo de espera para 3 minutos
@@ -39,6 +48,12 @@ public class PerformanceMonitorFilter implements WebFilter {
                 .baseUrl("http://localhost:8002/sql")
                 .clientConnector(new ReactorClientHttpConnector(HttpClient.create(provider)))
                 .build();
+    }
+
+    @Override
+    public void destroy() {
+        // Garante o encerramento gracioso do pool de conexões ao desligar a aplicação
+        this.provider.disposeLater().subscribe();
     }
 
     @Override
@@ -78,13 +93,17 @@ public class PerformanceMonitorFilter implements WebFilter {
         double processCpuLoad = (osBean != null) ? osBean.getProcessCpuLoad() : 0.0;
         if (processCpuLoad < 0) processCpuLoad = 0.0;
 
+        double cpuTemp = getCpuTemperature();
+
         Dados dados = new Dados(
             String.valueOf(exchange.getRequest().getURI()),
             durationMs + " ms",
-            String.format("%.6f%%", processCpuLoad * 100),
-            String.format("%.6f%%", cpuUsage),  /// CPU
+            String.format(Locale.US, "%.2f", processCpuLoad * 100),
+            String.format(Locale.US, "%.2f", cpuUsage),  /// CPU
+            String.format("%.1f°C", cpuTemp),
             (memAfter / (1024 * 1024)) + "MB / " + (memTotal / (1024 * 1024)) + "MB",
-            deltaMem + " B"
+            deltaMem + " B",
+            LocalDateTime.now().toString()
         );
 
         return webClient
@@ -92,8 +111,22 @@ public class PerformanceMonitorFilter implements WebFilter {
             .bodyValue(dados)
             .retrieve()
             .bodyToMono(Void.class)
-            .doOnError(e -> System.err.println("Falha ao enviar métrica: " + e.getMessage()))
+            .doOnError(e -> logger.warn("Falha ao enviar métrica para {}: {}", dados.url(), e.getMessage()))
             .onErrorResume(e -> Mono.empty());
+    }
+
+    private double getCpuTemperature() {
+        try {
+            String path = "/sys/class/thermal/thermal_zone0/temp";
+            if (Files.exists(Paths.get(path))) {
+                String content = Files.readString(Paths.get(path)).trim();
+                long tempMilli = Long.parseLong(content);
+                return tempMilli / 1000.0;
+            }
+        } catch (Exception e) {
+            // Ignora erros se não conseguir ler a temperatura
+        }
+        return 0.0;
     }
 
     private long[] getSystemMemory() {

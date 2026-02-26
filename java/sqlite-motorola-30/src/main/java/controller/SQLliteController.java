@@ -29,11 +29,11 @@ public class SQLliteController {
 
     @POST
     @Consumes(MediaType.APPLICATION_JSON)
-    @Produces(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.APPLICATION_JSON)
     public Response SetDados(DtoDados dado){
         System.out.println("📥 Recebendo dados: " + dado);
         if (service.adicionarDado(dado)) {
-            return Response.ok("Dados salvos com sucesso!").build();
+            return Response.ok(dado).build(); // Retorna o objeto DtoDados que foi recebido
         }
         System.err.println("Erro ao salvar dados: Falha na operação de inserção.");
         return Response.serverError().entity("Erro ao salvar dados. Verifique o log do servidor.").build();
